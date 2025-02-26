@@ -1,85 +1,35 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { App, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, Menu, TFile, WorkspaceLeaf, setIcon, FileView } from 'obsidian';
 
-// Remember to rename these classes and interfaces!
-
-interface MyPluginSettings {
-	mySetting: string;
+interface CopyOutlineSettings {
+	useHashMarks: boolean;
 }
 
-const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
+const DEFAULT_SETTINGS: CopyOutlineSettings = {
+	useHashMarks: false
 }
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+export default class CopyOutlinePlugin extends Plugin {
+	settings: CopyOutlineSettings;
 
 	async onload() {
 		await this.loadSettings();
 
-		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
-		// Perform additional things with the ribbon
-		ribbonIconEl.addClass('my-plugin-ribbon-class');
+		this.registerEvent(
+			this.app.workspace.on('layout-change', () => {
+				const outlineLeaves = this.app.workspace.getLeavesOfType('outline');
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status Bar Text');
-
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-sample-modal-simple',
-			name: 'Open sample modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'sample-editor-command',
-			name: 'Sample editor command',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				console.log(editor.getSelection());
-				editor.replaceSelection('Sample Editor Command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-sample-modal-complex',
-			name: 'Open sample modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
+				for (const leaf of outlineLeaves) {
+					if (leaf.view.containerEl.querySelector('.copy-outline-button')) {
+						continue;
 					}
 
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
+					this.addCopyButton(leaf);
+					this.addContextMenu(leaf);
 				}
-			}
-		});
+			})
+		);
 
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			console.log('click', evt);
-		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
-	}
-
-	onunload() {
-
+		this.addSettingTab(new SettingTab(this.app, this));
 	}
 
 	async loadSettings() {
@@ -89,45 +39,131 @@ export default class MyPlugin extends Plugin {
 	async saveSettings() {
 		await this.saveData(this.settings);
 	}
+
+	private addCopyButton(leaf: WorkspaceLeaf) {
+		const navButtonsContainer = leaf.view.containerEl.querySelector('.nav-buttons-container');
+		if (!navButtonsContainer) return;
+
+		const button = navButtonsContainer.createEl('button', {
+			cls: ['clickable-icon', 'copy-outline-button'],
+			attr: { 'aria-label': 'Copy outline' }
+		});
+
+		setIcon(button, 'copy');
+
+		button.addEventListener('click', async () => {
+			const file = (leaf.view as FileView).file;
+			if (!file) {
+				new Notice('No file is associated with this outline');
+				return;
+			}
+
+			const cache = this.app.metadataCache.getFileCache(file);
+			if (!cache?.headings) {
+				new Notice('No headings found in the current file');
+				return;
+			}
+
+			const outline = cache.headings
+				.map(heading => this.formatHeading(heading))
+				.join('\n');
+
+			await navigator.clipboard.writeText(outline);
+			new Notice(`Copied ${cache.headings.length} headings to clipboard`);
+		});
+	}
+
+	private addContextMenu(leaf: WorkspaceLeaf) {
+		this.registerDomEvent(leaf.view.containerEl, 'contextmenu', (event: MouseEvent) => {
+			const target = event.target as HTMLElement;
+			const outlineItem = target.closest('.tree-item');
+			if (!outlineItem) return;
+
+			const headingEl = outlineItem.querySelector('.tree-item-inner');
+			if (!headingEl) return;
+
+			const headingTitle = headingEl.textContent;
+			const file = (leaf.view as FileView).file;
+			if (!file) return;
+
+			const cache = this.app.metadataCache.getFileCache(file);
+			if (!cache?.headings) return;
+
+			const headingIndex = cache.headings.findIndex(h => h.heading === headingTitle);
+			if (headingIndex === -1) return;
+
+			event.preventDefault();
+			event.stopPropagation();
+
+			const menu = new Menu();
+			menu.addItem(item => 
+				item
+					.setTitle('Copy section outline')
+					.setIcon('copy')
+					.onClick(() => {
+						const sectionOutline = this.getSectionOutline(cache.headings ?? [], headingIndex);
+						const headingCount = this.countHeadingsInSection(cache.headings ?? [], headingIndex);
+						navigator.clipboard.writeText(sectionOutline);
+						new Notice(`Copied ${headingCount} headings to clipboard`);
+					})
+			);
+
+			menu.showAtMouseEvent(event);
+		});
+	}
+
+	private formatHeading(heading: { level: number; heading: string }): string {
+		if (this.settings.useHashMarks) {
+			return `${'#'.repeat(heading.level)} ${heading.heading}`;
+		}
+		return `${'\t'.repeat(heading.level - 1)}- ${heading.heading}`;
+	}
+
+	private getSectionOutline(headings: any[], startIndex: number): string {
+		const startLevel = headings[startIndex].level;
+		const section = [this.formatHeading(headings[startIndex])];
+
+		for (let i = startIndex + 1; i < headings.length; i++) {
+			const heading = headings[i];
+			if (heading.level <= startLevel) break;
+			section.push(this.formatHeading(heading));
+		}
+
+		return section.join('\n');
+	}
+
+	private countHeadingsInSection(headings: any[], startIndex: number): number {
+		const startLevel = headings[startIndex].level;
+		let count = 1; // Count the starting heading
+
+		for (let i = startIndex + 1; i < headings.length; i++) {
+			if (headings[i].level <= startLevel) break;
+			count++;
+		}
+
+		return count;
+	}
 }
 
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
+class SettingTab extends PluginSettingTab {
+	plugin: CopyOutlinePlugin;
 
-	onOpen() {
-		const {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
-	}
-}
-
-class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
-
-	constructor(app: App, plugin: MyPlugin) {
+	constructor(app: App, plugin: CopyOutlinePlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
 
 	display(): void {
 		const {containerEl} = this;
-
 		containerEl.empty();
 
 		new Setting(containerEl)
-			.setName('Setting #1')
-			.setDesc('It\'s a secret')
-			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
+			.setName('Use hashmarks')
+			.setDesc('Use "#" instead of indentation for heading levels')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.useHashMarks)
 				.onChange(async (value) => {
-					this.plugin.settings.mySetting = value;
+					this.plugin.settings.useHashMarks = value;
 					await this.plugin.saveSettings();
 				}));
 	}
