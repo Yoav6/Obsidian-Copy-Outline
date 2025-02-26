@@ -4,8 +4,8 @@
 	"version": "1.0.0",
 	"minAppVersion": "0.15.0",
 	"description": "Adds a button to copy the current note's outline to clipboard.",
-	"author": "Your Name",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
+	"author": "Yoav Ravid",
+	"authorUrl": "https://x.com/YoavRavid",
+	"fundingUrl": "",
 	"isDesktopOnly": false
 }
